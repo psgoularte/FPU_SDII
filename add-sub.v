@@ -15,7 +15,7 @@ reg [1:0]  state;
 reg [31:0] a_r, b_r;
 reg [2:0]  op_r;
 
-// ---------- ADD/SUB ----------
+// ADD/SUB 
 reg [31:0] addsub_result;
 reg        addsub_inv_op, addsub_overflow, addsub_underflow, addsub_inexact;
 
@@ -183,7 +183,7 @@ always @(*) begin
     end
 end
 
-// ---------- MUL (placeholder) ----------
+// MUL 
 wire [31:0] mul_result;
 wire        mul_inv_op, mul_overflow, mul_underflow, mul_inexact;
 
@@ -193,7 +193,7 @@ assign mul_overflow  = 1'b0;
 assign mul_underflow = 1'b0;
 assign mul_inexact   = 1'b0;
 
-// ---------- DIV (placeholder) ----------
+// DIV
 wire [31:0] div_result;
 wire        div_inv_op, div_div_zero, div_overflow, div_underflow, div_inexact;
 
@@ -204,14 +204,14 @@ assign div_overflow  = 1'b0;
 assign div_underflow = 1'b0;
 assign div_inexact   = 1'b0;
 
-// ---------- EQ / SLT (placeholder) ----------
+// EQ / SLT
 wire [31:0] cmp_result;
 wire        cmp_inv_op;
 
 assign cmp_result = 32'h00000000;
 assign cmp_inv_op = 1'b0;
 
-// ---------- FSM ----------
+// FSM 
 always @(posedge clock) begin
     if (reset) begin
         state <= ST_IDLE; a_r <= 32'd0; b_r <= 32'd0; op_r <= 3'd0;
