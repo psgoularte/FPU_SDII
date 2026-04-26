@@ -197,6 +197,24 @@ module tb_fpu;
         run_fpu(32'h00000000, 32'h40000000, 3'b001, "0.0 - 2.0 = -2.0");
         run_fpu(32'hC0000000, 32'hC0000000, 3'b001, "-2.0 - (-2.0) = +0.0");
 
+        $display("\n--- [DIV] Testes de Divisao por Zero e Sinais ---");
+        // +1.0 / +0.0 = +Inf (Flag DivZ)
+        run_fpu(32'h3F800000, 32'h00000000, 3'b011, " 1.0 / +0.0 = +Inf (Z)");
+        
+        // -1.0 / +0.0 = -Inf (Flag DivZ)
+        run_fpu(32'hBF800000, 32'h00000000, 3'b011, "-1.0 / +0.0 = -Inf (Z)");
+        
+        // +1.0 / -0.0 = -Inf (Flag DivZ)
+        run_fpu(32'h3F800000, 32'h80000000, 3'b011, " 1.0 / -0.0 = -Inf (Z)");
+
+        $display("\n--- [NaN] Tipos e Sinais (Bit 22) ---");
+        // Operacao Invalida deve gerar um Quiet NaN (7FC00000)
+        run_fpu(32'h7F800000, 32'h7F800000, 3'b001, "Inf - Inf = QNaN (7FC)");
+        
+        // Propagacao de SNaN (Bit 22 em 0) -> Deve resultar em QNaN e Flag Inv
+        // A: 7F800001 (SNaN)
+        run_fpu(32'h7F800001, 32'h40000000, 3'b000, "SNaN + 2.0 = QNaN (Inv)");
+
         $display("\n==========================================================================");
         $display("                   SIMULACAO FINALIZADA COM SUCESSO");
         $display("==========================================================================");
