@@ -24,13 +24,22 @@ module fpu (
     wire start_eq     = (op == 3'b100) ? start : 1'b0;
     wire start_slt    = (op == 3'b101) ? start : 1'b0;
 
-    //Adição e Subtração
+    // Instância: Adição e Subtração
     add_sub mod_add_sub (
         .clock(clock), .reset(reset), .start(start_addsub),
         .a(a), .b(b), .op(op[0]),
         .c(c_addsub), .busy(busy_addsub), .done(done_addsub),
         .f_inv_op(inv_addsub), .f_div_zero(), .f_overflow(overflow_addsub), 
         .f_underflow(underflow_addsub), .f_inexact(inexact_addsub)
+    );
+
+    // Instância: Multiplicação (AGORA CONECTADO)
+    mul mod_mul (
+        .clock(clock), .reset(reset), .start(start_mul),
+        .a(a), .b(b),
+        .c(c_mul), .busy(busy_mul), .done(done_mul),
+        .f_inv_op(inv_mul), .f_overflow(overflow_mul), 
+        .f_underflow(underflow_mul), .f_inexact(inexact_mul)
     );
 
     // Instância: Divisão
@@ -52,9 +61,6 @@ module fpu (
         .a(a), .b(b), .c(c_slt), .busy(busy_slt), .done(done_slt),
         .f_inv_op(inv_slt), .f_overflow(overflow_slt), .f_underflow(underflow_slt), .f_inexact(inexact_slt)
     );
-
-    // Placeholder para Multiplicação (conectar aqui quando o MUL estiver pronto)
-    assign c_mul = 32'd0; assign busy_mul = 0; assign done_mul = 0;
 
     // --- Multiplexação de Saída baseada no OP ---
     assign c           = (op == 3'b011) ? c_div :
@@ -103,7 +109,7 @@ module tb_fpu;
     wire busy, done;
     wire f_inv_op, f_div_zero, f_overflow, f_underflow, f_inexact;
 
-    // Instanciação da FPU integrada
+    // Instanciação da FPU
     fpu DUT (
         .clock(clock), .reset(reset), .start(start),
         .a(a), .b(b), .op(op),
@@ -112,68 +118,90 @@ module tb_fpu;
         .f_overflow(f_overflow), .f_underflow(f_underflow), .f_inexact(f_inexact)
     );
 
-    // Geração de Clock
     always #5 clock = ~clock;
 
-    // Task para simplificar as chamadas de teste
-    task run_fpu_test;
+    // Task Robusta de Teste
+    task run_fpu;
         input [31:0] val_a, val_b;
         input [2:0]  val_op;
-        input [8*20:1] op_name;
+        input [8*35:1] label;
         begin
             @(posedge clock);
             a = val_a; b = val_b; op = val_op; start = 1;
             @(posedge clock); start = 0;
             
+            // Espera o módulo terminar (essencial para MUL e DIV)
             wait(done);
             @(posedge clock);
-            #1; // Delay para estabilização dos sinais
-            $display("[%s] A:%h, B:%h => Result:%h | Flags(IZVUI): %b%b%b%b%b", 
-                     op_name, val_a, val_b, c, f_inv_op, f_div_zero, f_overflow, f_underflow, f_inexact);
+            #1;
+            $display("[%s] A:%h B:%h | Res:%h | Flags(IZVUI):%b%b%b%b%b", 
+                     label, val_a, val_b, c, f_inv_op, f_div_zero, f_overflow, f_underflow, f_inexact);
         end
     endtask
 
     initial begin
-        // Inicialização
         clock = 0; reset = 1; start = 0; a = 0; b = 0; op = 0;
         #20 reset = 0;
 
-        $display("\n===========================================================");
-        $display("       INICIANDO TESTES DE INTEGRACAO DA FPU");
-        $display("===========================================================\n");
+        $display("==========================================================================");
+        $display("          BATERIA DE TESTES DE ESTRESSE - FPU ESTRUTURAL 32-BIT");
+        $display("==========================================================================\n");
 
-        // --- TESTES DE SOMA (OP 000) ---
-        $display("--- OPERACAO: ADD (000) ---");
-        run_fpu_test(32'h40000000, 32'h40000000, 3'b000, "2.0 + 2.0");
-        run_fpu_test(32'h7F7FFFFF, 32'h7F7FFFFF, 3'b000, "Overflow Test");
+        // --- 1. SOMA/SUB: ARREDONDAMENTO E CANCELAMENTO ---
+        $display("--- [ADD/SUB] Arredondamento e Cancelamento ---");
+        run_fpu(32'h3F800000, 32'h33800000, 3'b000, "1.0 + 2^-24 (Tie-to-Even)"); 
+        run_fpu(32'h3F800001, 32'h33800000, 3'b000, "1.000...01 + 2^-24 (Up)");
+        run_fpu(32'h3F800000, 32'h3F7FFFFF, 3'b001, "1.0 - (1.0 - eps) (Normalizacao)");
+        run_fpu(32'h4B7FFFFF, 32'h3F800000, 3'b000, "Max Mantissa + 1 (Carry Out)");
 
-        // --- TESTES DE SUBTRACAO (OP 001) ---
-        $display("\n--- OPERACAO: SUB (001) ---");
-        run_fpu_test(32'h40800000, 32'h40000000, 3'b001, "4.0 - 2.0");
-        run_fpu_test(32'h00800000, 32'h00400000, 3'b001, "Subnormal Res");
+        // --- 2. MUL: CONTINUIDADE E SUBNORMAIS ---
+        $display("\n--- [MUL] Precisao e Subnormais ---");
+        run_fpu(32'h3FC00000, 32'h3FC00000, 3'b010, "1.5 * 1.5 (Exato)");
+        run_fpu(32'h00000001, 32'h3F800000, 3'b010, "MinDenorm * 1.0 (Identidade)");
+        run_fpu(32'h00400000, 32'h3F000000, 3'b010, "Denorm * 0.5 (Underflow p/ Denorm)");
+        run_fpu(32'h7F7FFFFF, 32'h7F7FFFFF, 3'b010, "Max * Max (Overflow p/ Inf)");
 
-        // --- TESTES DE DIVISAO (OP 011) ---
-        $display("\n--- OPERACAO: DIV (011) ---");
-        run_fpu_test(32'h41400000, 32'h40400000, 3'b011, "12.0 / 3.0");
-        run_fpu_test(32'h40A00000, 32'h00000000, 3'b011, "Div by Zero");
+        // --- 3. DIV: CASOS CRÍTICOS ---
+        $display("\n--- [DIV] Casos de Borda ---");
+        run_fpu(32'h3F800000, 32'h40400000, 3'b011, "1.0 / 3.0 (Dizima/Inexato)");
+        run_fpu(32'h00800000, 32'h40000000, 3'b011, "MinNormal / 2.0 (Norm -> Denorm)");
+        run_fpu(32'h40000000, 32'h00000001, 3'b011, "2.0 / MinDenorm (Overflow)");
+        run_fpu(32'h7F800000, 32'h7F800000, 3'b011, "Inf / Inf (Invalid Op)");
 
-        // --- TESTES DE IGUALDADE (OP 100) ---
-        $display("\n--- OPERACAO: EQ  (100) ---");
-        run_fpu_test(32'h3F800000, 32'h3F800000, 3'b100, "1.0 == 1.0");
-        run_fpu_test(32'h00000000, 32'h80000000, 3'b100, "+0.0 == -0.0");
-        run_fpu_test(32'h7FC00000, 32'h7FC00000, 3'b100, "NaN == NaN");
+        // --- 4. COMPARAÇÃO (EQ/SLT) ---
+        $display("\n--- [CMP] Logica de Decisao ---");
+        run_fpu(32'h80000000, 32'h00000000, 3'b100, "-0.0 == +0.0 (True)");
+        run_fpu(32'hBF800000, 32'h3F800000, 3'b101, "-1.0 < 1.0 (True)");
+        run_fpu(32'hC0000000, 32'hC0A00000, 3'b101, "-2.0 < -5.0 (False)");
+        run_fpu(32'h7FC00000, 32'h7FC00000, 3'b101, "NaN < NaN (False)");
 
-        // --- TESTES DE MENOR QUE (OP 101) ---
-        $display("\n--- OPERACAO: SLT (101) ---");
-        run_fpu_test(32'h40000000, 32'h40800000, 3'b101, "2.0 < 4.0");
-        run_fpu_test(32'hC0000000, 32'h3F800000, 3'b101, "-2.0 < 1.0");
-        run_fpu_test(32'h40000000, 32'h40000000, 3'b101, "2.0 < 2.0");
+        // --- 5. ZEROS E INFINITOS ---
+        $display("\n--- [SPECIAL] Zeros e Infinitos ---");
+        run_fpu(32'h7F800000, 32'hC0000000, 3'b011, "Inf / -2.0 = -Inf");
+        run_fpu(32'h00000000, 32'h80000000, 3'b010, "+0.0 * -0.0 = -0.0");
+        run_fpu(32'h7F800000, 32'h7F800000, 3'b000, "Inf + Inf = Inf");
+        run_fpu(32'h7F800000, 32'h7F800000, 3'b001, "Inf - Inf = NaN");
 
-        $display("\n===========================================================");
-        $display("                FIM DOS TESTES DA FPU");
-        $display("===========================================================\n");
+        // --- 6. UNDERFLOW EXTREMO (FLUSH TO ZERO) ---
+        $display("\n--- [UNDERFLOW] Limites Inferiores ---");
+        run_fpu(32'h00000001, 32'h3E800000, 3'b010, "MinDenorm * 0.25 (To Zero)");
+        run_fpu(32'h00000001, 32'h7F000000, 3'b011, "MinDenorm / Huge (To Zero)");
 
-        #50 $finish;
+        // --- 7. PROPAGAÇÃO DE NaN ---
+        $display("\n--- [NaN] Propagacao ---");
+        run_fpu(32'h7FC00000, 32'h40000000, 3'b000, "NaN + 2.0 = NaN");
+        run_fpu(32'h40000000, 32'h7FC00000, 3'b010, "2.0 * NaN = NaN");
+
+        // --- 8. SUBTRACTOR TEST (SIGN INVERSION) ---
+        $display("\n--- [SUB] Inversao de Sinal ---");
+        run_fpu(32'h00000000, 32'h40000000, 3'b001, "0.0 - 2.0 = -2.0");
+        run_fpu(32'hC0000000, 32'hC0000000, 3'b001, "-2.0 - (-2.0) = +0.0");
+
+        $display("\n==========================================================================");
+        $display("                   SIMULACAO FINALIZADA COM SUCESSO");
+        $display("==========================================================================");
+
+        #100 $finish;
     end
 
 endmodule
@@ -608,6 +636,204 @@ module div_fd (
                 end else begin
                     c_reg <= {reg_Sign, exp_final[7:0], (round_cout ? 23'd0 : mant_rounded[22:0])};
                     f_inexact_reg <= guard_bit | round_bit | sticky_bit;
+                end
+            end
+        end
+    end
+endmodule
+
+module mul (
+    input  wire        clock, reset, start,
+    input  wire [31:0] a, b,
+    output wire [31:0] c,
+    output wire        busy, done,
+    output wire        f_inv_op, f_overflow, f_underflow, f_inexact
+);
+    wire cmd_load_ab, cmd_calc, cmd_finish;
+
+    mul_uc UC (
+        .clock(clock), .reset(reset), .start(start),
+        .cmd_load_ab(cmd_load_ab), .cmd_calc(cmd_calc), .cmd_finish(cmd_finish),
+        .busy(busy), .done(done)
+    );
+
+    mul_fd FD (
+        .clock(clock), .reset(reset),
+        .a(a), .b(b),
+        .cmd_load_ab(cmd_load_ab), .cmd_calc(cmd_calc), .cmd_finish(cmd_finish),
+        .c(c), .f_inv_op(f_inv_op), .f_overflow(f_overflow), 
+        .f_underflow(f_underflow), .f_inexact(f_inexact)
+    );
+endmodule
+
+module mul_uc (
+    input  wire clock, reset, start,
+    output reg  cmd_load_ab, cmd_calc, cmd_finish,
+    output reg  busy, done
+);
+    reg [1:0] state, next_state;
+    localparam IDLE = 2'd0, CALC = 2'd1, FINISH = 2'd2;
+
+    always @(posedge clock or posedge reset) begin
+        if (reset) state <= IDLE;
+        else       state <= next_state;
+    end
+
+    always @(*) begin
+        next_state  = state;
+        cmd_load_ab = 0; cmd_calc = 0; cmd_finish = 0;
+        busy = 1; done = 0;
+
+        case(state)
+            IDLE: begin
+                busy = 0;
+                if (start) begin
+                    cmd_load_ab = 1;
+                    next_state = CALC;
+                end
+            end
+            CALC: begin
+                cmd_calc = 1;
+                next_state = FINISH;
+            end
+            FINISH: begin
+                cmd_finish = 1;
+                done = 1;
+                busy = 0;
+                next_state = IDLE;
+            end
+        endcase
+    end
+endmodule
+
+module mul_fd (
+    input  wire        clock, reset,
+    input  wire [31:0] a, b,
+    input  wire        cmd_load_ab, cmd_calc, cmd_finish,
+    
+    output reg  [31:0] c,
+    output reg         f_inv_op, f_overflow, f_underflow, f_inexact
+);
+
+    reg [31:0] reg_A, reg_B;
+
+    // --- 1. Extração e LZC (Leading Zero Counter) ---
+    wire sign_a = reg_A[31];
+    wire [7:0] exp_a = reg_A[30:23];
+    wire [22:0] frac_a = reg_A[22:0];
+
+    wire sign_b = reg_B[31];
+    wire [7:0] exp_b = reg_B[30:23];
+    wire [22:0] frac_b = reg_B[22:0];
+
+    wire [23:0] m_a_raw = {|exp_a, frac_a};
+    wire [23:0] m_b_raw = {|exp_b, frac_b};
+
+    // Função LZC para encontrar o primeiro '1' em subnormais
+    function [4:0] lzc24;
+        input [23:0] m;
+        integer i;
+        begin
+            lzc24 = 5'd23;
+            for (i = 0; i < 24; i = i + 1)
+                if (m[i]) lzc24 = 5'd23 - i[4:0];
+        end
+    endfunction
+
+    wire [4:0] lza = (|exp_a) ? 5'd0 : lzc24(m_a_raw);
+    wire [4:0] lzb = (|exp_b) ? 5'd0 : lzc24(m_b_raw);
+
+    // Pré-Normalização via Barrel Shifter (Alinha o '1' no bit 23)
+    wire [23:0] m_a_norm, m_b_norm;
+    barrel_shifter #(.WIDTH(24), .SHAMT_WIDTH(5)) bsh_a (.in(m_a_raw), .shamt(lza), .dir(1'b1), .out(m_a_norm), .sticky());
+    barrel_shifter #(.WIDTH(24), .SHAMT_WIDTH(5)) bsh_b (.in(m_b_raw), .shamt(lzb), .dir(1'b1), .out(m_b_norm), .sticky());
+
+    // --- 2. Multiplicador de Mantissa Estrutural ---
+    wire [47:0] partials [0:23];
+    wire [47:0] sum_tree [0:23];
+    genvar i;
+    generate
+        for (i = 0; i < 24; i = i + 1) begin : gen_partials
+            assign partials[i] = m_b_norm[i] ? ({24'd0, m_a_norm} << i) : 48'd0;
+        end
+        assign sum_tree[0] = partials[0];
+        for (i = 1; i < 24; i = i + 1) begin : gen_sum_tree
+            n_bit_adder #(48) add_p (.a(sum_tree[i-1]), .b(partials[i]), .cin(1'b0), .sum(sum_tree[i]), .cout());
+        end
+    endgenerate
+    wire [47:0] raw_product = sum_tree[23];
+
+    // --- 3. Cálculo do Expoente com Ajuste de LZC ---
+    wire res_sign = sign_a ^ sign_b;
+    wire [9:0] exp_a_adj = {2'b0, (|exp_a ? exp_a : 8'd1)} - {5'd0, lza};
+    wire [9:0] exp_b_adj = {2'b0, (|exp_b ? exp_b : 8'd1)} - {5'd0, lzb};
+    
+    wire [9:0] exp_sum, exp_with_bias;
+    n_bit_adder #(10) add_e (.a(exp_a_adj), .b(exp_b_adj), .cin(1'b0), .sum(exp_sum), .cout());
+    n_bit_subtractor #(10) sub_b (.a(exp_sum), .b(10'd127), .sum(exp_with_bias), .cout());
+
+    // --- 4. Normalização e Tratamento de Underflow (Denormalização de Saída) ---
+    wire norm_shift = raw_product[47];
+    wire [9:0] exp_norm;
+    n_bit_adder #(10) add_en (.a(exp_with_bias), .b({9'd0, norm_shift}), .cin(1'b0), .sum(exp_norm), .cout());
+
+    // Se exp_norm <= 0, o resultado é subnormal. Precisamos shift right para encaixar no expoente 0.
+    wire is_sub_out = $signed(exp_norm) <= 0;
+    wire [9:0] sub_shift_amt = 10'd1 - exp_norm; 
+    
+    // Limitamos o shift para evitar lixo (max 25)
+    wire [4:0] final_shamt = is_sub_out ? (sub_shift_amt > 25 ? 5'd26 : sub_shift_amt[4:0]) : {4'd0, norm_shift};
+    
+    wire [47:0] product_final;
+    wire sticky_sh;
+    barrel_shifter #(.WIDTH(48), .SHAMT_WIDTH(6)) shifter_final (
+        .in(raw_product), .shamt({1'b0, final_shamt}), .dir(1'b0), // Right
+        .out(product_final), .sticky(sticky_sh)
+    );
+
+    // --- 5. Arredondamento ---
+    wire [22:0] f_pre = product_final[45:23];
+    wire guard  = product_final[22];
+    wire round  = product_final[21];
+    wire sticky = |product_final[20:0] | sticky_sh;
+    
+    wire round_up = guard & (round | sticky | f_pre[0]);
+    wire [22:0] f_rounded;
+    wire rnd_carry;
+    n_bit_adder #(23) addr_r (.a(f_pre), .b(23'd0), .cin(round_up), .sum(f_rounded), .cout(rnd_carry));
+
+    // Expoente final (0 se for subnormal e não arredondou para normal)
+    wire [7:0] exp_out = (is_sub_out && !rnd_carry) ? 8'd0 : exp_norm[7:0] + {7'd0, rnd_carry};
+
+    // --- 6. Casos Especiais ---
+    wire a_is_nan = (&exp_a) & (|frac_a); wire b_is_nan = (&exp_b) & (|frac_b);
+    wire a_is_inf = (&exp_a) & ~(|frac_a); wire b_is_inf = (&exp_b) & ~(|frac_b);
+    wire a_is_zero = ~(|exp_a) & ~(|frac_a); wire b_is_zero = ~(|exp_b) & ~(|frac_b);
+
+    always @(posedge clock or posedge reset) begin
+        if (reset) begin c <= 0; {f_inv_op, f_overflow, f_underflow, f_inexact} <= 4'b0; end
+        else begin
+            if (cmd_load_ab) begin reg_A <= a; reg_B <= b; end
+            if (cmd_finish) begin
+                // Reset inicial das flags para garantir limpeza
+                f_inv_op <= 0; f_overflow <= 0; f_underflow <= 0; f_inexact <= 0;
+
+                if (a_is_nan | b_is_nan | (a_is_inf & b_is_zero) | (a_is_zero & b_is_inf)) begin
+                    c <= 32'h7FC00000; f_inv_op <= 1;
+                end else if (a_is_inf | b_is_inf) begin
+                    c <= {res_sign, 8'hFF, 23'd0};
+                    // Infinitos puros não disparam overflow se já eram infinitos
+                end else if (a_is_zero | b_is_zero || (is_sub_out && final_shamt > 25)) begin
+                    c <= {res_sign, 8'h00, 23'd0};
+                    if (!(a_is_zero | b_is_zero)) f_underflow <= 1; // Só sinaliza se "encolheu" até zero
+                end else if ($signed(exp_norm) >= 255) begin
+                    c <= {res_sign, 8'hFF, 23'd0}; 
+                    f_overflow <= 1; f_inexact <= 1;
+                end else begin
+                    // Cálculo normal ou subnormal válido
+                    c <= {res_sign, exp_out, f_rounded};
+                    f_inexact <= guard | round | sticky;
+                    f_underflow <= is_sub_out; 
                 end
             end
         end

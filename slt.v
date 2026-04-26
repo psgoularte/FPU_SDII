@@ -149,6 +149,25 @@ module tb_slt;
         run_slt_test(32'h7FC00000, 32'h40000000, " NaN < 2.0  (False)     ");
         run_slt_test(32'h40000000, 32'h7FC00000, " 2.0 < NaN  (False)     ");
 
+        $display("\n--- 7. NÚMEROS DENORMALIZADOS (SUBNORMAIS) ---");
+        // MinDenorm (2^-149) < MinNormal (2^-126) -> True
+        run_slt_test(32'h00000001, 32'h00800000, " MinDenorm < MinNormal  ");
+        
+        // Comparação entre Denormalizados: Magnitude pura
+        // 0x00000001 < 0x00000002 -> True
+        run_slt_test(32'h00000001, 32'h00000002, " Denorm(1) < Denorm(2)  ");
+        
+        // Denormalizado Positivo vs Zero -> Zero é menor
+        run_slt_test(32'h00000000, 32'h00000001, " 0.0 < MinDenorm (True) ");
+        
+        // Denormalizado Negativo vs Zero -> Denorm é menor
+        // -MinDenorm (0x80000001) < 0 -> True
+        run_slt_test(32'h80000001, 32'h00000000, " -MinDenorm < 0 (True)  ");
+
+        // Denormalizado Negativo vs Normalizado Negativo
+        // -MinNormal (-2^-126) < -MinDenorm (-2^-149) -> True (Magnitude maior é menor)
+        run_slt_test(32'h80800000, 32'h80000001, " -MinNorm < -MinDenorm  ");
+
         $display("\n==========================================================");
         $display("                   FIM DOS TESTES SLT");
         $display("==========================================================\n");
