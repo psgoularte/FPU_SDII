@@ -136,7 +136,7 @@ module add_sub_fd (
     // --- 4. Alinhamento (Subtrator Estrutural + Barrel Shifter) ---
     wire [7:0] exp_diff;
     n_bit_subtractor #(8) sub_exp_align (
-        .a(exp_big), .b(exp_small), .s(exp_diff), .cout()
+        .a(exp_big), .b(exp_small), .sum(exp_diff), .cout()
     );
 
     wire [26:0] mant_small_shifted;
@@ -153,12 +153,12 @@ module add_sub_fd (
     
     wire [27:0] mant_sum;
     n_bit_adder #(28) add_mant_sum (
-        .a(mant_big_ext), .b(mant_small_ext), .cin(1'b0), .s(mant_sum), .cout()
+        .a(mant_big_ext), .b(mant_small_ext), .cin(1'b0), .sum(mant_sum), .cout()
     );
 
     wire [27:0] mant_diff;
     n_bit_adder #(28) add_mant_diff (
-        .a(mant_big_ext), .b(~mant_small_ext), .cin(~align_sticky), .s(mant_diff), .cout()
+        .a(mant_big_ext), .b(~mant_small_ext), .cin(~align_sticky), .sum(mant_diff), .cout()
     );
 
     wire carry_out = same_sign ? mant_sum[27] : 1'b0;
@@ -178,7 +178,7 @@ module add_sub_fd (
     
     wire [4:0] lz_limit;
     n_bit_subtractor #(5) sub_lz_limit (
-        .a(exp_big[4:0]), .b(5'd1), .s(lz_limit), .cout()
+        .a(exp_big[4:0]), .b(5'd1), .sum(lz_limit), .cout()
     );
     wire [4:0] lz_used = (exp_big == 0) ? 5'd0 : ({3'd0, lz} >= exp_big) ? lz_limit : lz;
 
@@ -198,10 +198,10 @@ module add_sub_fd (
     // Ajuste Estrutural do Expoente
     wire [7:0] exp_norm_add, exp_norm_sub;
     n_bit_adder #(8) add_exp_norm (
-        .a(exp_big), .b({7'd0, carry_out}), .cin(1'b0), .s(exp_norm_add), .cout()
+        .a(exp_big), .b({7'd0, carry_out}), .cin(1'b0), .sum(exp_norm_add), .cout()
     );
     n_bit_subtractor #(8) sub_exp_norm (
-        .a(exp_big), .b({3'd0, lz_used}), .s(exp_norm_sub), .cout()
+        .a(exp_big), .b({3'd0, lz_used}), .sum(exp_norm_sub), .cout()
     );
     wire [7:0] exp_norm = same_sign ? exp_norm_add : exp_norm_sub;
 
@@ -213,7 +213,7 @@ module add_sub_fd (
 
     wire [24:0] mant_rounded;
     n_bit_adder #(25) add_round (
-        .a({1'b0, mant_norm[26:3]}), .b(25'd0), .cin(round_up), .s(mant_rounded), .cout()
+        .a({1'b0, mant_norm[26:3]}), .b(25'd0), .cin(round_up), .sum(mant_rounded), .cout()
     );
     wire round_carry = mant_rounded[24];
 
@@ -221,7 +221,7 @@ module add_sub_fd (
     
     wire [7:0] final_exp;
     n_bit_adder #(8) add_exp_final (
-        .a(exp_norm), .b({7'd0, round_carry}), .cin(1'b0), .s(final_exp), .cout()
+        .a(exp_norm), .b({7'd0, round_carry}), .cin(1'b0), .sum(final_exp), .cout()
     );
 
     // --- 8. Formatação e Seleção de Saída ---
@@ -275,16 +275,16 @@ endmodule
 
 module full_adder (
     input  wire a, b, cin,
-    output wire s, cout
+    output wire sum, cout
 );
-    assign s    = a ^ b ^ cin;
+    assign sum    = a ^ b ^ cin;
     assign cout = (a & b) | (cin & (a ^ b));
 endmodule
 
 module n_bit_adder #(parameter N = 32) (
     input  wire [N-1:0] a, b,
     input  wire         cin,
-    output wire [N-1:0] s,
+    output wire [N-1:0] sum,
     output wire         cout
 );
     wire [N:0] carry;
@@ -294,7 +294,7 @@ module n_bit_adder #(parameter N = 32) (
         for (k = 0; k < N; k = k + 1) begin : gen_add
             full_adder fa (
                 .a(a[k]), .b(b[k]), .cin(carry[k]),
-                .s(s[k]), .cout(carry[k+1])
+                .sum(sum[k]), .cout(carry[k+1])
             );
         end
     endgenerate
@@ -303,12 +303,12 @@ endmodule
 
 module n_bit_subtractor #(parameter N = 32) (
     input  wire [N-1:0] a, b,
-    output wire [N-1:0] s,
+    output wire [N-1:0] sum,
     output wire         cout
 );
     n_bit_adder #(N) sub_add (
         .a(a), .b(~b), .cin(1'b1),
-        .s(s), .cout(cout)
+        .sum(sum), .cout(cout)
     );
 endmodule
 
@@ -372,8 +372,6 @@ module barrel_shifter #(
 
     endgenerate
 endmodule
-
-`timescale 1ns/1ps
 
 `timescale 1ns/1ps
 

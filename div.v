@@ -143,20 +143,19 @@ module div_fd (
 );
 
     // ==========================================
-    // Registradores de Estado do FD (Sequenciais)
+    // Registradores de Estado
     // ==========================================
     reg [31:0] reg_A, reg_B_in;
-    reg [25:0] reg_R;     // Resto (26 bits para segurança no shift)
-    reg [26:0] reg_Q;     // Quociente (27 ciclos geram 27 bits)
-    reg [25:0] reg_B;     // Divisor normalizado alinhado
-    reg [11:0] reg_Exp;   // Expoente com bits extras para sinal/overflow
+    reg [25:0] reg_R;     
+    reg [26:0] reg_Q;     
+    reg [25:0] reg_B;     
+    reg [11:0] reg_Exp;   
     reg        reg_Sign;
-    reg [5:0]  reg_Count; // Contador do loop (0 a 27)
+    reg [5:0]  reg_Count; 
 
     reg [31:0] c_reg;
     reg        f_inv_op_reg, f_div_zero_reg, f_overflow_reg, f_underflow_reg, f_inexact_reg;
 
-    // Atribuição contínua para as saídas
     assign c           = c_reg;
     assign f_inv_op    = f_inv_op_reg;
     assign f_div_zero  = f_div_zero_reg;
@@ -165,7 +164,7 @@ module div_fd (
     assign f_inexact   = f_inexact_reg;
 
     // ==========================================
-    // 1. Decodificação e Pré-Normalização
+    // 1. Extração e Detecção de Exceções
     // ==========================================
     wire        sign_a = reg_A[31];
     wire [7:0]  exp_a  = reg_A[30:23];
@@ -175,14 +174,12 @@ module div_fd (
     wire [7:0]  exp_b  = reg_B_in[30:23];
     wire [22:0] frac_b = reg_B_in[22:0];
 
-    // Detecção de Subnormais (Expoente == 0)
     wire hidden_a = (|exp_a);
     wire hidden_b = (|exp_b);
     
     wire [23:0] mant_a = {hidden_a, frac_a};
     wire [23:0] mant_b = {hidden_b, frac_b};
 
-    // Casos Especiais IEEE 754
     wire a_is_zero = ~(|exp_a) & ~(|frac_a);
     wire b_is_zero = ~(|exp_b) & ~(|frac_b);
     wire a_is_inf  = (&exp_a)  & ~(|frac_a);
@@ -192,16 +189,16 @@ module div_fd (
 
     assign exception_detected = a_is_zero | b_is_zero | a_is_inf | b_is_inf | a_is_nan | b_is_nan;
 
-    // Contador de Zeros à Esquerda Combinacional (LZC) para normalizar subnormais
-    // Feito em cadeia de MUXes (assign) conforme restrição de paradigma
+    // ==========================================
+    // 2. Pré-Normalização com Barrel Shifter
+    // ==========================================
+    // Substitui o "mant << lz" por instâncias estruturais
+    
     function [4:0] count_leading_zeros;
         input [23:0] mantissa;
         integer i;
         begin
-            // Valor padrão caso seja tudo zero
             count_leading_zeros = 5'd24;
-            
-            // Varre de baixo para cima
             for (i = 0; i <= 23; i = i + 1) begin
                 if (mantissa[i]) begin
                     count_leading_zeros = 5'd23 - i[4:0];
@@ -210,46 +207,53 @@ module div_fd (
         end
     endfunction
 
-    // Uso direto com 'assign' (sem nenhum always @)
-    wire [4:0] lz_a;
-    wire [4:0] lz_b;
+    wire [4:0] lz_a = count_leading_zeros(mant_a);
+    wire [4:0] lz_b = count_leading_zeros(mant_b);
 
-    assign lz_a = count_leading_zeros(mant_a);
-    assign lz_b = count_leading_zeros(mant_b);
+    wire [23:0] norm_mant_a, norm_mant_b;
 
-    // Mantissas normalizadas (sempre terão '1' no bit 23)
-    wire [23:0] norm_mant_a = mant_a << lz_a;
-    wire [23:0] norm_mant_b = mant_b << lz_b;
+    // Instância para Normalizar Dividendo (A)
+    barrel_shifter #(.WIDTH(24), .SHAMT_WIDTH(5)) bsh_a (
+        .in(mant_a),
+        .shamt(lz_a),
+        .dir(1'b1), // Left Shift
+        .out(norm_mant_a),
+        .sticky()
+    );
+
+    // Instância para Normalizar Divisor (B)
+    barrel_shifter #(.WIDTH(24), .SHAMT_WIDTH(5)) bsh_b (
+        .in(mant_b),
+        .shamt(lz_b),
+        .dir(1'b1), // Left Shift
+        .out(norm_mant_b),
+        .sticky()
+    );
 
     // ==========================================
-    // 2. Cálculo do Expoente Inicial (Adder Instanciado)
+    // 3. Cálculo do Expoente Inicial
     // ==========================================
-    // O expoente efetivo de um subnormal é 1 (antes do bias)
     wire [11:0] eff_exp_a = hidden_a ? {4'b0, exp_a} : 12'd1;
     wire [11:0] eff_exp_b = hidden_b ? {4'b0, exp_b} : 12'd1;
 
-    // Ajuste de expoente devido à pré-normalização dos subnormais (bitwise + adder)
     wire [11:0] adj_exp_a, adj_exp_b;
     n_bit_adder #(.N(12)) add_adj_a (.a(eff_exp_a), .b(~{7'b0, lz_a}), .cin(1'b1), .sum(adj_exp_a), .cout());
     n_bit_adder #(.N(12)) add_adj_b (.a(eff_exp_b), .b(~{7'b0, lz_b}), .cin(1'b1), .sum(adj_exp_b), .cout());
 
-    // Exp_A - Exp_B
     wire [11:0] exp_diff;
     n_bit_adder #(.N(12)) sub_exp (.a(adj_exp_a), .b(~adj_exp_b), .cin(1'b1), .sum(exp_diff), .cout());
     
-    // Bias: (Exp_A - Exp_B) + 127
     wire [11:0] exp_initial;
     n_bit_adder #(.N(12)) add_bias (.a(exp_diff), .b(12'd127), .cin(1'b0), .sum(exp_initial), .cout());
 
     // ==========================================
-    // 3. Aritmética do Loop de Divisão (Shift-Subtract)
+    // 4. Aritmética do Loop (Shift-Subtract)
     // ==========================================
     assign div_done = (reg_Count == 6'd0);
 
     wire [25:0] sub_res;
-    wire        sub_cout; // Se = 1, não houve empréstimo (R >= B)
+    wire        sub_cout; 
     
-    // Subtração: R - B
     n_bit_adder #(.N(26)) div_sub (
         .a(reg_R), .b(~reg_B), .cin(1'b1), .sum(sub_res), .cout(sub_cout)
     );
@@ -259,22 +263,15 @@ module div_fd (
     wire [26:0] next_Q = {reg_Q[25:0], do_sub};
 
    // ==========================================
-    // 4. Normalização Pós-Divisão e Arredondamento
+    // 5. Normalização Pós-Divisão e Arredondamento
     // ==========================================
-    // O Quociente terá o primeiro '1' em reg_Q[26] ou reg_Q[25]
     wire        is_norm_1 = reg_Q[26]; 
-    
-    // CORREÇÃO DOS ÍNDICES:
-    // Se is_norm_1 == 1, o '1' implícito está em [26]. A mantissa útil (implícito + fração) é [26:3]
-    // Se is_norm_1 == 0, o '1' implícito está em [25]. A mantissa útil é [25:2]
     wire [23:0] mant_pre_round = is_norm_1 ? reg_Q[26:3] : reg_Q[25:2];
     
-    // Bits de Arredondamento ajustados para o novo deslocamento
     wire guard_bit  = is_norm_1 ? reg_Q[2] : reg_Q[1];
     wire round_bit  = is_norm_1 ? reg_Q[1] : reg_Q[0];
     wire sticky_bit = is_norm_1 ? (reg_Q[0] | (|reg_R)) : (|reg_R);
 
-    // Arredondamento pro par mais próximo
     wire round_up = guard_bit & (round_bit | sticky_bit | mant_pre_round[0]);
 
     wire [23:0] mant_rounded;
@@ -284,8 +281,7 @@ module div_fd (
         .a(mant_pre_round), .b(24'd0), .cin(round_up), .sum(mant_rounded), .cout(round_cout)
     );
 
-    // Ajuste final do expoente
-    wire [11:0] exp_adj_norm = is_norm_1 ? 12'd0 : 12'hFFF; // 12'hFFF é -1 em complemento de 2
+    wire [11:0] exp_adj_norm = is_norm_1 ? 12'd0 : 12'hFFF; 
     wire [11:0] exp_adj_rnd  = round_cout ? 12'd1 : 12'd0;
     
     wire [11:0] exp_final_1, exp_final;
@@ -293,7 +289,7 @@ module div_fd (
     n_bit_adder #(.N(12)) exp_add_2 (.a(exp_final_1), .b(exp_adj_rnd), .cin(1'b0), .sum(exp_final), .cout());
 
     // ==========================================
-    // 5. Bloco Sequencial (Atualização de Registradores)
+    // 6. Bloco Sequencial
     // ==========================================
     always @(posedge clock or posedge reset) begin
         if (reset) begin
@@ -302,7 +298,6 @@ module div_fd (
             f_inv_op_reg <= 0; f_div_zero_reg <= 0; f_overflow_reg <= 0; 
             f_underflow_reg <= 0; f_inexact_reg <= 0;
         end else begin
-            
             if (cmd_load_ab) begin
                 reg_A <= a;
                 reg_B_in <= b;
@@ -311,31 +306,28 @@ module div_fd (
             end
             
             if (cmd_except) begin
-                // Tratamento de Casos Especiais Imediato
                 if (a_is_nan | b_is_nan | (a_is_zero & b_is_zero) | (a_is_inf & b_is_inf)) begin
-                    c_reg <= {1'b0, 8'hFF, 23'h7FFFFF}; // NaN
+                    c_reg <= {1'b0, 8'hFF, 23'h7FFFFF}; 
                     f_inv_op_reg <= 1'b1;
                 end else if (b_is_zero & ~a_is_zero) begin
-                    c_reg <= {sign_a ^ sign_b, 8'hFF, 23'h0}; // Divisão por Zero -> Inf
+                    c_reg <= {sign_a ^ sign_b, 8'hFF, 23'h0}; 
                     f_div_zero_reg <= 1'b1;
                 end else if (a_is_inf & ~b_is_inf) begin
-                    c_reg <= {sign_a ^ sign_b, 8'hFF, 23'h0}; // Infinito
+                    c_reg <= {sign_a ^ sign_b, 8'hFF, 23'h0}; 
                 end else if (a_is_zero & ~b_is_zero) begin
-                    c_reg <= {sign_a ^ sign_b, 8'h00, 23'h0}; // Zero
+                    c_reg <= {sign_a ^ sign_b, 8'h00, 23'h0}; 
                 end else if (b_is_inf & ~a_is_inf) begin
-                    c_reg <= {sign_a ^ sign_b, 8'h00, 23'h0}; // Num / Inf = Zero
+                    c_reg <= {sign_a ^ sign_b, 8'h00, 23'h0}; 
                 end
             end
             
             if (cmd_start_div) begin
-                // Inicialização das variáveis para o loop
                 reg_Sign  <= sign_a ^ sign_b;
                 reg_Exp   <= exp_initial;
-                // Alinha o dividendo à esquerda para iniciar o Shift-Subtract fracionário
                 reg_R     <= {2'b0, norm_mant_a};
                 reg_B     <= {2'b0, norm_mant_b};
                 reg_Q     <= 27'd0;
-                reg_Count <= 6'd27; // 27 ciclos matemáticos necessários
+                reg_Count <= 6'd27; 
             end
             
             if (cmd_div_step) begin
@@ -345,24 +337,19 @@ module div_fd (
             end
             
             if (cmd_round) begin
-                // Verificação de limites e montagem do resultado
                 if ($signed(exp_final) >= 255) begin
-                    // Overflow
                     c_reg <= {reg_Sign, 8'hFF, 23'h0};
                     f_overflow_reg <= 1'b1;
                     f_inexact_reg  <= 1'b1;
                 end else if ($signed(exp_final) <= 0) begin
-                    // Underflow Severo (Flush to Zero)
                     c_reg <= {reg_Sign, 8'h00, 23'h0};
                     f_underflow_reg <= 1'b1;
                     f_inexact_reg   <= 1'b1;
                 end else begin
-                    // Resultado Normalizado e Perfeito
                     c_reg <= {reg_Sign, exp_final[7:0], (round_cout ? 23'd0 : mant_rounded[22:0])};
                     f_inexact_reg <= guard_bit | round_bit | sticky_bit;
                 end
             end
-            
         end
     end
 endmodule
@@ -393,6 +380,67 @@ module n_bit_adder #(parameter N = 32) (
         end
     endgenerate
     assign cout = carry[N];
+endmodule
+
+module barrel_shifter #(
+    parameter WIDTH = 27,
+    parameter SHAMT_WIDTH = 8
+)(
+    input  wire [WIDTH-1:0]       in,
+    input  wire [SHAMT_WIDTH-1:0] shamt,
+    input  wire                   dir,    // 0 = Right Shift, 1 = Left Shift
+    output wire [WIDTH-1:0]       out,
+    output wire                   sticky
+);
+    wire [WIDTH-1:0] stage_in     [0:SHAMT_WIDTH];
+    wire             stage_sticky [0:SHAMT_WIDTH];
+
+    genvar i, j, k;
+
+    generate
+        // ETAPA 1: Reversão de Bits (Left Shift)
+        wire [WIDTH-1:0] in_reversed;
+        for (i = 0; i < WIDTH; i = i + 1) begin : gen_rev_in
+            assign in_reversed[i] = in[WIDTH-1-i];
+        end
+
+        assign stage_in[0]     = dir ? in_reversed : in;
+        assign stage_sticky[0] = 1'b0;
+
+        // ETAPA 2: Matrizes do Barrel Shifter
+        for (j = 0; j < SHAMT_WIDTH; j = j + 1) begin : gen_stages
+            localparam SHIFT_VAL = 1 << j;
+            
+            wire stage_dropped_bits;
+            if (SHIFT_VAL < WIDTH) begin : gen_drop_partial
+                assign stage_dropped_bits = |stage_in[j][SHIFT_VAL-1 : 0];
+            end else begin : gen_drop_all
+                assign stage_dropped_bits = |stage_in[j];
+            end
+            
+            assign stage_sticky[j+1] = shamt[j] ? (stage_sticky[j] | stage_dropped_bits) : stage_sticky[j];
+
+            for (k = 0; k < WIDTH; k = k + 1) begin : gen_mux
+                if (k + SHIFT_VAL < WIDTH) begin : gen_mux_norm
+                    assign stage_in[j+1][k] = shamt[j] ? stage_in[j][k + SHIFT_VAL] : stage_in[j][k];
+                end else begin : gen_mux_zero
+                    assign stage_in[j+1][k] = shamt[j] ? 1'b0 : stage_in[j][k];
+                end
+            end
+        end
+
+        // ETAPA 3: Reversão de Saída (Left Shift)
+        wire [WIDTH-1:0] out_reversed;
+        for (i = 0; i < WIDTH; i = i + 1) begin : gen_rev_out
+            assign out_reversed[i] = stage_in[SHAMT_WIDTH][WIDTH-1-i];
+        end
+
+        // ETAPA 4: Saída e Proteção
+        wire overshift = (shamt >= WIDTH);
+        assign out = overshift ? {WIDTH{1'b0}} : (dir ? out_reversed : stage_in[SHAMT_WIDTH]);
+        assign sticky = dir ? 1'b0 : (overshift ? (|in) : stage_sticky[SHAMT_WIDTH]);
+
+    endgenerate
 endmodule
 
 `timescale 1ns/1ps
