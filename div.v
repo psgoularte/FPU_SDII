@@ -1,3 +1,42 @@
+module div (
+    input  wire        clock,
+    input  wire        reset,
+    input  wire        start,
+    input  wire [31:0] a,
+    input  wire [31:0] b,
+    output wire [31:0] c,
+    output wire        busy,
+    output wire        done,
+    output wire        f_inv_op,
+    output wire        f_div_zero,
+    output wire        f_overflow,
+    output wire        f_underflow,
+    output wire        f_inexact
+);
+
+    wire cmd_load_ab, cmd_start_div, cmd_div_step, cmd_round, cmd_except;
+    wire exception_detected, div_done;
+
+    div_uc UC (
+        .clock(clock), .reset(reset), .start(start),
+        .exception_detected(exception_detected), .div_done(div_done),
+        .cmd_load_ab(cmd_load_ab), .cmd_start_div(cmd_start_div),
+        .cmd_div_step(cmd_div_step), .cmd_round(cmd_round), .cmd_except(cmd_except),
+        .busy(busy), .done(done)
+    );
+
+    div_fd FD (
+        .clock(clock), .reset(reset),
+        .a(a), .b(b),
+        .cmd_load_ab(cmd_load_ab), .cmd_start_div(cmd_start_div),
+        .cmd_div_step(cmd_div_step), .cmd_round(cmd_round), .cmd_except(cmd_except),
+        .exception_detected(exception_detected), .div_done(div_done),
+        .c(c), .f_inv_op(f_inv_op), .f_div_zero(f_div_zero),
+        .f_overflow(f_overflow), .f_underflow(f_underflow), .f_inexact(f_inexact)
+    );
+
+endmodule
+
 module div_uc (
     input  wire clock,
     input  wire reset,
@@ -75,19 +114,6 @@ module div_uc (
             default: next_state = ST_IDLE;
         endcase
     end
-endmodule
-
-module adder #(
-    parameter N = 32
-)(
-    input  wire [N-1:0] a,
-    input  wire [N-1:0] b,
-    input  wire         cin,
-    output wire [N-1:0] sum,
-    output wire         cout
-);
-    // Uso direto de assign como requerido
-    assign {cout, sum} = a + b + cin;
 endmodule
 
 module div_fd (
@@ -204,16 +230,16 @@ module div_fd (
 
     // Ajuste de expoente devido à pré-normalização dos subnormais (bitwise + adder)
     wire [11:0] adj_exp_a, adj_exp_b;
-    adder #(.N(12)) add_adj_a (.a(eff_exp_a), .b(~{7'b0, lz_a}), .cin(1'b1), .sum(adj_exp_a), .cout());
-    adder #(.N(12)) add_adj_b (.a(eff_exp_b), .b(~{7'b0, lz_b}), .cin(1'b1), .sum(adj_exp_b), .cout());
+    n_bit_adder #(.N(12)) add_adj_a (.a(eff_exp_a), .b(~{7'b0, lz_a}), .cin(1'b1), .sum(adj_exp_a), .cout());
+    n_bit_adder #(.N(12)) add_adj_b (.a(eff_exp_b), .b(~{7'b0, lz_b}), .cin(1'b1), .sum(adj_exp_b), .cout());
 
     // Exp_A - Exp_B
     wire [11:0] exp_diff;
-    adder #(.N(12)) sub_exp (.a(adj_exp_a), .b(~adj_exp_b), .cin(1'b1), .sum(exp_diff), .cout());
+    n_bit_adder #(.N(12)) sub_exp (.a(adj_exp_a), .b(~adj_exp_b), .cin(1'b1), .sum(exp_diff), .cout());
     
     // Bias: (Exp_A - Exp_B) + 127
     wire [11:0] exp_initial;
-    adder #(.N(12)) add_bias (.a(exp_diff), .b(12'd127), .cin(1'b0), .sum(exp_initial), .cout());
+    n_bit_adder #(.N(12)) add_bias (.a(exp_diff), .b(12'd127), .cin(1'b0), .sum(exp_initial), .cout());
 
     // ==========================================
     // 3. Aritmética do Loop de Divisão (Shift-Subtract)
@@ -224,7 +250,7 @@ module div_fd (
     wire        sub_cout; // Se = 1, não houve empréstimo (R >= B)
     
     // Subtração: R - B
-    adder #(.N(26)) div_sub (
+    n_bit_adder #(.N(26)) div_sub (
         .a(reg_R), .b(~reg_B), .cin(1'b1), .sum(sub_res), .cout(sub_cout)
     );
 
@@ -254,7 +280,7 @@ module div_fd (
     wire [23:0] mant_rounded;
     wire        round_cout;
     
-    adder #(.N(24)) adder_round (
+    n_bit_adder #(.N(24)) adder_round (
         .a(mant_pre_round), .b(24'd0), .cin(round_up), .sum(mant_rounded), .cout(round_cout)
     );
 
@@ -263,8 +289,8 @@ module div_fd (
     wire [11:0] exp_adj_rnd  = round_cout ? 12'd1 : 12'd0;
     
     wire [11:0] exp_final_1, exp_final;
-    adder #(.N(12)) exp_add_1 (.a(reg_Exp), .b(exp_adj_norm), .cin(1'b0), .sum(exp_final_1), .cout());
-    adder #(.N(12)) exp_add_2 (.a(exp_final_1), .b(exp_adj_rnd), .cin(1'b0), .sum(exp_final), .cout());
+    n_bit_adder #(.N(12)) exp_add_1 (.a(reg_Exp), .b(exp_adj_norm), .cin(1'b0), .sum(exp_final_1), .cout());
+    n_bit_adder #(.N(12)) exp_add_2 (.a(exp_final_1), .b(exp_adj_rnd), .cin(1'b0), .sum(exp_final), .cout());
 
     // ==========================================
     // 5. Bloco Sequencial (Atualização de Registradores)
@@ -341,46 +367,33 @@ module div_fd (
     end
 endmodule
 
-module div (
-    input  wire        clock,
-    input  wire        reset,
-    input  wire        start,
-    input  wire [31:0] a,
-    input  wire [31:0] b,
-    output wire [31:0] c,
-    output wire        busy,
-    output wire        done,
-    output wire        f_inv_op,
-    output wire        f_div_zero,
-    output wire        f_overflow,
-    output wire        f_underflow,
-    output wire        f_inexact
+module full_adder (
+    input  wire a, b, cin,
+    output wire sum, cout
 );
-
-    wire cmd_load_ab, cmd_start_div, cmd_div_step, cmd_round, cmd_except;
-    wire exception_detected, div_done;
-
-    div_uc UC (
-        .clock(clock), .reset(reset), .start(start),
-        .exception_detected(exception_detected), .div_done(div_done),
-        .cmd_load_ab(cmd_load_ab), .cmd_start_div(cmd_start_div),
-        .cmd_div_step(cmd_div_step), .cmd_round(cmd_round), .cmd_except(cmd_except),
-        .busy(busy), .done(done)
-    );
-
-    div_fd FD (
-        .clock(clock), .reset(reset),
-        .a(a), .b(b),
-        .cmd_load_ab(cmd_load_ab), .cmd_start_div(cmd_start_div),
-        .cmd_div_step(cmd_div_step), .cmd_round(cmd_round), .cmd_except(cmd_except),
-        .exception_detected(exception_detected), .div_done(div_done),
-        .c(c), .f_inv_op(f_inv_op), .f_div_zero(f_div_zero),
-        .f_overflow(f_overflow), .f_underflow(f_underflow), .f_inexact(f_inexact)
-    );
-
+    assign sum    = a ^ b ^ cin;
+    assign cout = (a & b) | (cin & (a ^ b));
 endmodule
 
-`timescale 1ns/1ps
+module n_bit_adder #(parameter N = 32) (
+    input  wire [N-1:0] a, b,
+    input  wire         cin,
+    output wire [N-1:0] sum,
+    output wire         cout
+);
+    wire [N:0] carry;
+    assign carry[0] = cin;
+    genvar k;
+    generate
+        for (k = 0; k < N; k = k + 1) begin : gen_add
+            full_adder fa (
+                .a(a[k]), .b(b[k]), .cin(carry[k]),
+                .sum(sum[k]), .cout(carry[k+1])
+            );
+        end
+    endgenerate
+    assign cout = carry[N];
+endmodule
 
 `timescale 1ns/1ps
 
